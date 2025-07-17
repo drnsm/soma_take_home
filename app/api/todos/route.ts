@@ -6,6 +6,9 @@ import { join } from 'path';
 export async function GET() {
   try {
     const todos = await prisma.todo.findMany({
+      include: {
+        dependencies: true, // Include dependencies in the response
+      },
       orderBy: {
         createdAt: 'desc',
       },
@@ -16,19 +19,77 @@ export async function GET() {
   }
 }
 
+async function hasCircularDependency(todoId: number, dependencyIds: number[]): Promise<boolean> {
+  for (const depId of dependencyIds) {
+    if (await hasPath(depId, todoId)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function hasPath(fromId: number, toId: number, visited = new Set<number>()): Promise<boolean> {
+  if (fromId === toId) return true;
+  if (visited.has(fromId)) return false;
+  
+  visited.add(fromId);
+  
+  const todo = await prisma.todo.findUnique({
+    where: { id: fromId },
+    include: { dependencies: true }
+  });
+  
+  if (!todo) return false;
+  
+  for (const dep of todo.dependencies) {
+    if (await hasPath(dep.id, toId, visited)) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
 export async function POST(request: Request) {
   try {
-    const { title, dueDate } = await request.json(); // Extract dueDate
+    const { title, dueDate, dependencyIds } = await request.json();
     if (!title || title.trim() === '') {
       return NextResponse.json({ error: 'Title is required' }, { status: 400 });
     }
 
-    // Create todo with due date
+    // Create todo first to get ID
     const todo = await prisma.todo.create({
       data: {
         title,
-        dueDate: dueDate ? new Date(dueDate + 'T12:00:00.000Z') : null, // Convert string to Date at noon UTC to avoid timezone issues
+        dueDate: dueDate ? new Date(dueDate + 'T12:00:00.000Z') : null,
       },
+    });
+
+    // Check for circular dependencies before adding them
+    if (dependencyIds && dependencyIds.length > 0) {
+      const hasCircular = await hasCircularDependency(todo.id, dependencyIds);
+      
+      if (hasCircular) {
+        await prisma.todo.delete({ where: { id: todo.id } });
+        return NextResponse.json(
+          { error: 'Cannot add dependencies: would create circular dependency' }, 
+          { status: 400 }
+        );
+      }
+
+      // Add dependencies
+      await prisma.todo.update({
+        where: { id: todo.id },
+        data: {
+          dependencies: { connect: dependencyIds.map((id: number) => ({ id })) }
+        }
+      });
+    }
+
+    // Get final todo with dependencies
+    const finalTodo = await prisma.todo.findUnique({
+      where: { id: todo.id },
+      include: { dependencies: true }
     });
 
     // Fetch and save image from Pexels
@@ -36,10 +97,9 @@ export async function POST(request: Request) {
       await fetchAndSaveImage(title, todo.id);
     } catch (imageError) {
       console.error('Failed to fetch/save image:', imageError);
-      // Continue without failing the todo creation
     }
 
-    return NextResponse.json(todo, { status: 201 });
+    return NextResponse.json(finalTodo, { status: 201 });
   } catch (error) {
     return NextResponse.json({ error: 'Error creating todo' }, { status: 500 });
   }

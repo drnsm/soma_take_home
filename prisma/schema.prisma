@@ -12,4 +12,8 @@ model Todo {
   title     String
   dueDate   DateTime?
   createdAt DateTime  @default(now())
+  
+  // Self-referencing many-to-many for dependencies
+  dependencies Todo[] @relation("TodoDependencies")
+  dependents   Todo[] @relation("TodoDependencies")
 }
