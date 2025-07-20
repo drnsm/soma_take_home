@@ -287,8 +287,10 @@ export default function Home() {
         
         {/* Error message */}
         {error && (
-          <div className="mb-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg">
-            {error}
+          <div className="fixed top-4 left-1/2 -translate-x-1/2 w-full max-w-md z-[100] px-4">
+            <div className="p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg shadow-lg">
+              {error}
+            </div>
           </div>
         )}
         

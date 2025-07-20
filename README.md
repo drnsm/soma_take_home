@@ -1,3 +1,11 @@
+## Submission Info
+
+Here is a link to a recording I made of the app:
+https://www.loom.com/share/a47ad7946ea544a5b36659c75a9821ca?sid=71add141-190f-47d6-ac88-dbdcc01abd27
+
+To run this app, create a `.env` file in the root of the project and add your Pexels API key:
+PEXELS_API_KEY="xyz......"
+
 ## Soma Capital Technical Assessment
 
 This is a technical assessment as part of the interview process for Soma Capital.
