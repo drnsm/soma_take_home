@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { writeFile } from 'fs/promises';
 import { join } from 'path';
+import { hasCircularDependency } from '@/lib/dependencyUtils';
 
 export async function GET() {
   try {
@@ -17,37 +18,6 @@ export async function GET() {
   } catch (error) {
     return NextResponse.json({ error: 'Error fetching todos' }, { status: 500 });
   }
-}
-
-async function hasCircularDependency(todoId: number, dependencyIds: number[]): Promise<boolean> {
-  for (const depId of dependencyIds) {
-    if (await hasPath(depId, todoId)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-async function hasPath(fromId: number, toId: number, visited = new Set<number>()): Promise<boolean> {
-  if (fromId === toId) return true;
-  if (visited.has(fromId)) return false;
-  
-  visited.add(fromId);
-  
-  const todo = await prisma.todo.findUnique({
-    where: { id: fromId },
-    include: { dependencies: true }
-  });
-  
-  if (!todo) return false;
-  
-  for (const dep of todo.dependencies) {
-    if (await hasPath(dep.id, toId, visited)) {
-      return true;
-    }
-  }
-  
-  return false;
 }
 
 export async function POST(request: Request) {
@@ -75,6 +45,25 @@ export async function POST(request: Request) {
           { error: 'Cannot add dependencies: would create circular dependency' }, 
           { status: 400 }
         );
+      }
+
+      // Validate dependency due dates
+      if (dueDate) {
+        const newTodoDueDate = new Date(dueDate + 'T12:00:00.000Z');
+        const dependencies = await prisma.todo.findMany({
+          where: { id: { in: dependencyIds } },
+        });
+
+        for (const dep of dependencies) {
+          if (dep.dueDate && dep.dueDate > newTodoDueDate) {
+            // Clean up the created todo
+            await prisma.todo.delete({ where: { id: todo.id } });
+            return NextResponse.json(
+              { error: `Dependency "${dep.title}" has a due date after the new todo.` },
+              { status: 400 }
+            );
+          }
+        }
       }
 
       // Add dependencies

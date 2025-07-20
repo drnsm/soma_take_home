@@ -1,6 +1,8 @@
 "use client"
 import { Todo } from '@prisma/client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
+import { DependencyGraph } from './components/DependencyGraph';
+import { DependencySelector } from './components/DependencySelector';
 
 // Extend Todo type to include dependencies
 type TodoWithDependencies = Todo & {
@@ -86,10 +88,8 @@ function calculateCriticalPath(todos: TodoWithDependencies[]): CriticalPathResul
   
   // Reconstruct critical path
   const criticalPath: number[] = [];
-  let current = endTask;
-  while (current !== null) {
+  for (let current = endTask; current !== null; current = parent.get(current) as any) {
     criticalPath.unshift(current);
-    current = parent.get(current) || null;
   }
   
   return {
@@ -99,18 +99,78 @@ function calculateCriticalPath(todos: TodoWithDependencies[]): CriticalPathResul
   };
 }
 
+interface EarliestStartDates {
+  [key: number]: Date | null;
+}
+
+function calculateEarliestStartDates(todos: TodoWithDependencies[]): EarliestStartDates {
+  const startDates: EarliestStartDates = {};
+
+  todos.forEach(todo => {
+    // Find the due dates of all dependencies that have one.
+    const dependencyDueDates = todo.dependencies
+      .map(dep => dep.dueDate ? new Date(dep.dueDate) : null)
+      .filter((date): date is Date => date !== null);
+
+    if (dependencyDueDates.length === 0) {
+      // No dependencies with due dates, so it can start anytime.
+      startDates[todo.id] = null;
+    } else {
+      // Find the latest due date among all dependencies.
+      const latestDependencyDueDate = new Date(Math.max(...dependencyDueDates.map(date => date.getTime())));
+      
+      // The earliest start date is the day after the latest dependency is due.
+      const earliestStartDate = new Date(latestDependencyDueDate);
+      earliestStartDate.setDate(earliestStartDate.getDate() + 1);
+      
+      startDates[todo.id] = earliestStartDate;
+    }
+  });
+
+  return startDates;
+}
+
+
 export default function Home() {
   const [newTodo, setNewTodo] = useState('');
   const [newDueDate, setNewDueDate] = useState('');
   const [selectedDependencies, setSelectedDependencies] = useState<number[]>([]);
   const [todos, setTodos] = useState<TodoWithDependencies[]>([]);
   const [imageLoadingStates, setImageLoadingStates] = useState<{[key: number]: boolean}>({});
-  const [editingDependencies, setEditingDependencies] = useState<number | null>(null);
+  const [editingTodo, setEditingTodo] = useState<TodoWithDependencies | null>(null);
   const [editDependencies, setEditDependencies] = useState<number[]>([]);
   const [error, setError] = useState('');
+  const [showGraph, setShowGraph] = useState(false);
+  const [focusedTask, setFocusedTask] = useState<number | undefined>(undefined);
 
   // Calculate critical path whenever todos change
   const criticalPath = calculateCriticalPath(todos);
+  const earliestStartDates = calculateEarliestStartDates(todos);
+
+  // Sort todos by earliest start date
+  const sortedTodos = useMemo(() => {
+    return [...todos].sort((a, b) => {
+      const startDateA = earliestStartDates[a.id];
+      const startDateB = earliestStartDates[b.id];
+
+      // If a task has no start date, it's considered ready to start immediately.
+      if (!startDateA && startDateB) return -1;
+      if (startDateA && !startDateB) return 1;
+
+      // If both have start dates, sort by the earliest one.
+      if (startDateA && startDateB) {
+        const timeA = startDateA.getTime();
+        const timeB = startDateB.getTime();
+        if (timeA !== timeB) return timeA - timeB;
+      }
+      
+      // Fallback to due date if start dates are the same or not present.
+      const dueDateA = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
+      const dueDateB = b.dueDate ? new Date(b.dueDate).getTime() : Infinity;
+      
+      return dueDateA - dueDateB;
+    });
+  }, [todos, earliestStartDates]);
 
   useEffect(() => {
     fetchTodos();
@@ -177,20 +237,17 @@ export default function Home() {
     }
   };
 
-  const handleDependencyChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const values = Array.from(e.target.selectedOptions, option => parseInt(option.value));
-    setSelectedDependencies(values);
-  };
-
-  const handleEditDependencies = (todoId: number, currentDependencies: Todo[]) => {
-    setEditingDependencies(todoId);
-    setEditDependencies(currentDependencies.map(dep => dep.id));
+  const handleEditDependencies = (todo: TodoWithDependencies) => {
+    setEditingTodo(todo);
+    setEditDependencies(todo.dependencies.map(dep => dep.id));
     setError(''); // Clear errors when starting edit
   };
 
-  const handleSaveDependencies = async (todoId: number) => {
+  const handleSaveDependencies = async () => {
+    if (!editingTodo) return;
+
     try {
-      const response = await fetch(`/api/todos/${todoId}`, {
+      const response = await fetch(`/api/todos/${editingTodo.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ dependencyIds: editDependencies }),
@@ -202,7 +259,7 @@ export default function Home() {
         return;
       }
 
-      setEditingDependencies(null);
+      setEditingTodo(null);
       setEditDependencies([]);
       setError('');
       fetchTodos();
@@ -212,42 +269,21 @@ export default function Home() {
   };
 
   const handleCancelEdit = () => {
-    setEditingDependencies(null);
+    setEditingTodo(null);
     setEditDependencies([]);
     setError(''); // Clear errors when canceling
   };
+
+  // Remove this function since it's no longer needed
+  // const handleTaskClick = (taskId: number) => {
+  //   setFocusedTask(taskId);
+  //   setShowGraph(true);
+  // };
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-orange-500 to-red-500">
       <div className="container mx-auto p-4">
         <h1 className="text-4xl font-bold text-center text-white mb-8">Things To Do App</h1>
-        
-        {/* Critical Path Info - Updates instantly! */}
-        {criticalPath.criticalPath.length > 0 && (
-          <div className="mb-6 bg-red-100 border-l-4 border-red-500 p-4 rounded-lg">
-            <h3 className="text-lg font-semibold text-red-800 mb-2">
-              🔥 Critical Path (Length: {criticalPath.pathLength} tasks)
-            </h3>
-            <p className="text-red-700 text-sm mb-2">
-              Longest dependency chain - delays here affect the entire project:
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {criticalPath.criticalPath.map((taskId, index) => {
-                const task = todos.find(t => t.id === taskId);
-                return task ? (
-                  <div key={taskId} className="flex items-center">
-                    <span className="px-3 py-1 bg-red-200 text-red-800 rounded-full text-sm font-medium">
-                      {task.title}
-                    </span>
-                    {index < criticalPath.criticalPath.length - 1 && (
-                      <span className="mx-2 text-red-600 font-bold">→</span>
-                    )}
-                  </div>
-                ) : null;
-              })}
-            </div>
-          </div>
-        )}
         
         {/* Error message */}
         {error && (
@@ -291,71 +327,88 @@ export default function Home() {
 
             {/* Dependencies Selection */}
             {todos.length > 0 && (
-              <div className="bg-white bg-opacity-90 p-6 rounded-lg shadow-lg">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4">Dependencies</h3>
-                <p className="text-sm text-gray-600 mb-3">Select tasks that must be completed first:</p>
-                
-                <select 
-                  multiple
-                  className="w-full p-3 rounded focus:outline-none focus:ring-2 focus:ring-orange-400 text-gray-700 h-40 border"
-                  value={selectedDependencies.map(String)}
-                  onChange={handleDependencyChange}
-                  title="Hold Ctrl/Cmd to select multiple dependencies"
-                >
-                  {todos.map(todo => (
-                    <option 
-                      key={todo.id} 
-                      value={todo.id}
-                      className="p-2 hover:bg-orange-100"
-                    >
-                      {todo.title}
-                    </option>
-                  ))}
-                </select>
-                
-                {selectedDependencies.length > 0 && (
-                  <div className="mt-3 p-3 bg-orange-50 rounded">
-                    <p className="text-sm font-medium text-orange-800">Selected dependencies:</p>
-                    <div className="flex flex-wrap gap-2 mt-2">
-                      {selectedDependencies.map(depId => {
-                        const dep = todos.find(t => t.id === depId);
-                        return dep ? (
-                          <span 
-                            key={depId}
-                            className="px-2 py-1 bg-orange-200 text-orange-800 rounded-full text-xs"
-                          >
-                            {dep.title}
-                          </span>
-                        ) : null;
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
+              <DependencySelector
+                todos={todos}
+                selectedDependencies={selectedDependencies}
+                onChange={setSelectedDependencies}
+                title="Dependencies"
+                description="Select tasks that must be completed first:"
+              />
             )}
           </div>
 
           {/* Right Column - Todo List with Critical Path Highlighting */}
-          <div>
+          <div className="space-y-6">
+            {/* Critical Path Info - Updates instantly! */}
+            {criticalPath.criticalPath.length > 0 && (
+              <div className="bg-purple-50 border-l-4 border-purple-500 p-3 rounded-lg">
+                <h3 className="font-semibold text-purple-800 mb-2">
+                  📊 Critical Path Analysis ({criticalPath.pathLength} tasks)
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {criticalPath.criticalPath.map((taskId, index) => {
+                    const task = todos.find(t => t.id === taskId);
+                    return task ? (
+                      <div key={taskId} className="flex items-center">
+                        <span className="px-3 py-1 bg-purple-200 text-purple-800 rounded-full text-sm font-medium">
+                          {task.title}
+                        </span>
+                        {index < criticalPath.criticalPath.length - 1 && (
+                          <span className="mx-2 text-purple-600 font-bold">→</span>
+                        )}
+                      </div>
+                    ) : null;
+                  })}
+                </div>
+              </div>
+            )}
+            
             <div className="bg-white bg-opacity-90 p-6 rounded-lg shadow-lg">
-              <h2 className="text-xl font-semibold text-gray-800 mb-4">
-                Todo List ({todos.length} tasks)
-              </h2>
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xl font-semibold text-gray-800">
+                  Todo List ({todos.length} tasks)
+                </h2>
+                <button
+                  onClick={() => {
+                    setFocusedTask(undefined);
+                    setShowGraph(true);
+                  }}
+                  className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                >
+                  📊 View Dependency Graph
+                </button>
+              </div>
+
               
               {todos.length === 0 ? (
                 <p className="text-gray-500 text-center py-8">No todos yet. Add one to get started!</p>
               ) : (
-                <ul className="space-y-4">
-                  {todos.map((todo: TodoWithDependencies) => {
+                <ul className="space-y-4 max-h-[calc(100vh-20rem)] overflow-y-auto pr-2">
+                  {sortedTodos.map((todo: TodoWithDependencies) => {
                     const isOnCriticalPath = criticalPath.criticalPath.includes(todo.id);
                     const pathLevel = criticalPath.nodeLevels[todo.id] || 0;
                     
+                    const earliestStartDate = earliestStartDates[todo.id];
+                    const dueDate = todo.dueDate ? new Date(todo.dueDate) : null;
+
+                    // Dates are stored as YYYY-MM-DD, which new Date() interprets as UTC.
+                    // We compare against the start of today in UTC for overdue checks.
+                    const today = new Date();
+                    today.setUTCHours(0, 0, 0, 0);
+
+                    const isOverdue = dueDate && dueDate < today;
+
+                    const areDatesSameDay = dueDate && earliestStartDate &&
+                      dueDate.toISOString().slice(0, 10) === earliestStartDate.toISOString().slice(0, 10);
+                    
+                    const formatDate = (d: Date) => d.toLocaleDateString('en-US', { timeZone: 'UTC' });
+
                     return (
                       <li
                         key={todo.id}
                         className={`flex items-start p-4 rounded-lg border transition-all duration-200 ${
                           isOnCriticalPath 
-                            ? 'bg-red-50 border-red-300 shadow-lg transform scale-[1.02]' 
+                            ? 'bg-purple-50 border-purple-300 shadow-lg transform scale-[1.02]' 
                             : 'bg-gray-50 border-gray-200 hover:shadow-md'
                         }`}
                       >
@@ -376,99 +429,73 @@ export default function Home() {
                         
                         {/* Todo content */}
                         <div className="flex-grow">
-                          <div className="flex items-center gap-2">
-                            <div className={`font-semibold ${isOnCriticalPath ? 'text-red-800' : 'text-gray-800'}`}>
+                          <div className="flex items-baseline flex-wrap gap-x-3 gap-y-1">
+                            <div className={`font-semibold ${isOnCriticalPath ? 'text-purple-800' : 'text-gray-800'}`}>
                               {todo.title}
                             </div>
                             {isOnCriticalPath && (
-                              <span className="px-2 py-1 bg-red-500 text-white text-xs rounded-full font-bold animate-pulse">
-                                CRITICAL
+                              <span className="px-2 py-1 bg-purple-500 text-white text-xs rounded-full font-bold">
+                                CRITICAL PATH
                               </span>
                             )}
-                            <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full">
-                              Level {pathLevel}
-                            </span>
+                            
+                            {/* Date Info: Combined Due Date and Earliest Start */}
+                            {(() => {
+                              if (areDatesSameDay && dueDate) {
+                                return (
+                                  <div className={`text-sm ${isOverdue ? 'text-red-600 font-bold' : 'text-gray-600'}`}>
+                                    Due: {formatDate(dueDate)}
+                                  </div>
+                                );
+                              }
+
+                              return (
+                                <>
+                                  {dueDate && (
+                                    <div className={`text-sm ${isOverdue ? 'text-red-600 font-bold' : 'text-gray-600'}`}>
+                                      Due: {formatDate(dueDate)}
+                                    </div>
+                                  )}
+                                  {earliestStartDate && (
+                                    <div className="text-sm font-semibold text-gray-700">
+                                      Earliest Start: {formatDate(earliestStartDate)}
+                                      {dueDate && earliestStartDate > dueDate && ' (after due date!)'}
+                                    </div>
+                                  )}
+                                </>
+                              );
+                            })()}
                           </div>
-                          
-                          {/* Due date */}
-                          {todo.dueDate && (
-                            <div className={`text-sm mt-1 ${
-                              new Date(todo.dueDate) < new Date(new Date().setHours(0, 0, 0, 0))
-                                ? 'text-red-600 font-semibold' 
-                                : 'text-gray-600'
-                            }`}>
-                              Due: {new Date(todo.dueDate).toLocaleDateString('en-US', { timeZone: 'UTC' })}
-                            </div>
-                          )}
                           
                           {/* Dependencies with edit functionality */}
                           <div className="mt-2">
-                            {editingDependencies === todo.id ? (
-                              // Edit mode
-                              <div className="space-y-2">
-                                <div className="text-sm font-medium text-gray-700">Edit Dependencies:</div>
-                                <select 
-                                  multiple
-                                  className="w-full p-2 text-sm rounded border focus:outline-none focus:ring-2 focus:ring-orange-400"
-                                  value={editDependencies.map(String)}
-                                  onChange={(e) => {
-                                    const values = Array.from(e.target.selectedOptions, option => parseInt(option.value));
-                                    setEditDependencies(values);
-                                  }}
-                                >
-                                  {todos
-                                    .filter(t => t.id !== todo.id) // Can't depend on itself
-                                    .map(t => (
-                                      <option key={t.id} value={t.id}>
-                                        {t.title}
-                                      </option>
-                                    ))}
-                                </select>
-                                <div className="flex gap-2">
-                                  <button
-                                    onClick={() => handleSaveDependencies(todo.id)}
-                                    className="px-3 py-1 bg-green-500 text-white text-sm rounded hover:bg-green-600"
-                                  >
-                                    Save
-                                  </button>
-                                  <button
-                                    onClick={handleCancelEdit}
-                                    className="px-3 py-1 bg-gray-500 text-white text-sm rounded hover:bg-gray-600"
-                                  >
-                                    Cancel
-                                  </button>
-                                </div>
-                              </div>
-                            ) : (
-                              // View mode
-                              <div className="flex items-center gap-2">
-                                <div className="text-sm">
-                                  {todo.dependencies && todo.dependencies.length > 0 ? (
-                                    <div className="text-blue-600">
-                                      <span className="font-medium">🔗 Depends on:</span>
-                                      <div className="flex flex-wrap gap-1 mt-1">
-                                        {todo.dependencies.map(dep => (
-                                          <span 
-                                            key={dep.id}
-                                            className="px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-xs"
-                                          >
-                                            {dep.title}
-                                          </span>
-                                        ))}
-                                      </div>
+                            <div className="flex items-center gap-2">
+                              <div className="text-sm">
+                                {todo.dependencies && todo.dependencies.length > 0 ? (
+                                  <div className="text-blue-600">
+                                    <span className="font-medium">🔗 Depends on:</span>
+                                    <div className="flex flex-wrap gap-1 mt-1">
+                                      {todo.dependencies.map(dep => (
+                                        <span 
+                                          key={dep.id}
+                                          className="px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-xs"
+                                        >
+                                          {dep.title}
+                                        </span>
+                                      ))}
                                     </div>
-                                  ) : (
-                                    <span className="text-gray-500">No dependencies</span>
-                                  )}
-                                </div>
-                                <button
-                                  onClick={() => handleEditDependencies(todo.id, todo.dependencies)}
-                                  className="text-blue-500 hover:text-blue-700 text-sm underline"
-                                >
-                                  Edit
-                                </button>
+                                  </div>
+                                ) : (
+                                  <span className="text-gray-500">No dependencies</span>
+                                )}
                               </div>
-                            )}
+                              <button
+                                onClick={() => handleEditDependencies(todo)}
+                                className="text-blue-500 hover:text-blue-700 text-sm underline"
+                              >
+                                Edit
+                              </button>
+                            </div>
                           </div>
                         </div>
                         
@@ -491,6 +518,48 @@ export default function Home() {
           </div>
         </div>
       </div>
+
+
+      {/* Edit Dependencies Modal */}
+      {editingTodo && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="w-full max-w-md">
+            <DependencySelector
+              todos={todos}
+              selectedDependencies={editDependencies}
+              onChange={setEditDependencies}
+              excludeId={editingTodo.id}
+              title={`Edit Dependencies for "${editingTodo.title}"`}
+              description="Select tasks that must be completed before this task."
+            />
+            <div className="bg-white bg-opacity-90 p-4 rounded-b-lg shadow-lg flex justify-end gap-3">
+               <button
+                onClick={handleSaveDependencies}
+                className="px-4 py-2 bg-green-500 text-white text-sm font-semibold rounded hover:bg-green-600"
+              >
+                Save Changes
+              </button>
+              <button
+                onClick={handleCancelEdit}
+                className="px-4 py-2 bg-gray-500 text-white text-sm font-semibold rounded hover:bg-gray-600"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {/* Add the graph modal */}
+      {showGraph && (
+        <DependencyGraph
+          todos={todos}
+          criticalPath={criticalPath.criticalPath}
+          focusedTaskId={focusedTask}
+          onClose={() => setShowGraph(false)}
+        />
+      )}
     </div>
   );
 }

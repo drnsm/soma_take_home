@@ -1,42 +1,11 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { hasCircularDependency } from '@/lib/dependencyUtils';
 
 interface Params {
   params: {
     id: string;
   };
-}
-
-// Add these validation functions
-async function hasCircularDependency(todoId: number, dependencyIds: number[]): Promise<boolean> {
-  for (const depId of dependencyIds) {
-    if (await hasPath(depId, todoId)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-async function hasPath(fromId: number, toId: number, visited = new Set<number>()): Promise<boolean> {
-  if (fromId === toId) return true;
-  if (visited.has(fromId)) return false;
-  
-  visited.add(fromId);
-  
-  const todo = await prisma.todo.findUnique({
-    where: { id: fromId },
-    include: { dependencies: true }
-  });
-  
-  if (!todo) return false;
-  
-  for (const dep of todo.dependencies) {
-    if (await hasPath(dep.id, toId, visited)) {
-      return true;
-    }
-  }
-  
-  return false;
 }
 
 // Add PATCH endpoint for updating dependencies
@@ -64,6 +33,22 @@ export async function PATCH(request: Request, { params }: Params) {
           { error: 'Cannot add dependencies: would create circular dependency' }, 
           { status: 400 }
         );
+      }
+      
+      // Validate dependency due dates
+      if (existingTodo.dueDate) {
+        const dependencies = await prisma.todo.findMany({
+          where: { id: { in: dependencyIds } },
+        });
+
+        for (const dep of dependencies) {
+          if (dep.dueDate && dep.dueDate > existingTodo.dueDate) {
+            return NextResponse.json(
+              { error: `Dependency "${dep.title}" has a due date after the current todo.` },
+              { status: 400 }
+            );
+          }
+        }
       }
     }
 
