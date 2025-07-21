@@ -1,10 +1,10 @@
 ## Submission Info
 
 Here is a link to a recording I made of the app:
-https://www.loom.com/share/a47ad7946ea544a5b36659c75a9821ca?sid=71add141-190f-47d6-ac88-dbdcc01abd27
+https://www.loom.com/share/a47ad7946ea544a5b36659c75a9821ca?sid=4d553711-0664-4bb0-b6ea-0ce9647a0685
 
 Here is a link to a recording showing how I handled past-due tasks and circular dependencies.
-https://www.loom.com/share/2b990e7c02e541e0a0f6bfa68255fa7a?sid=61dc257e-0b2d-4eb8-890a-b961c74522c6
+https://www.loom.com/share/2b990e7c02e541e0a0f6bfa68255fa7a?sid=1c869f0d-328d-49a7-a16d-6b7027b001bc
 
 To run this app, create a `.env` file in the root of the project and add your Pexels API key:
 PEXELS_API_KEY="xyz......"
